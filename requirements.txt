@@ -1,0 +1,7 @@
+streamlit
+pandas
+google-genai
+google-analytics-data
+google-api-python-client
+google-auth
+openpyxl
