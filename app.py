@@ -28,7 +28,6 @@ try:
         ]
     )
     
-    # Load Gemini API Key
     gemini_key = st.secrets["GUIDE_GEMINI_KEY"]
     ai_client = genai.Client(api_key=gemini_key)
     st.sidebar.success("🔑 All Cloud APIs Connected Securely!")
@@ -46,13 +45,8 @@ end_date = st.sidebar.date_input("End Date", pd.to_datetime("today"))
 if st.sidebar.button("⚡ Execute Live Audit"):
     with st.spinner("Pulling data from Google Search Console and Analytics APIs..."):
         try:
-            # ----------------------------------------------------
-            # 🟢 PULL LIVE GSC DATA VIA DIRECT AUTHORIZED SESSION
-            # ----------------------------------------------------
-            # 💎 FIX: Forces a direct HTTP post using refreshed tokens to prevent access token expiration
+            # GSC DATA PULL
             session = AuthorizedSession(scoped_creds)
-            
-            # Encode URL parameters safely to handle domain strings
             encoded_url = gsc_site_url.replace(":", "%3A").replace("/", "%2F")
             api_endpoint = f"https://googleapis.com{encoded_url}/searchAnalytics/query"
             
@@ -81,9 +75,7 @@ if st.sidebar.button("⚡ Execute Live Audit"):
                     })
             gsc_df = pd.DataFrame(gsc_records)
 
-            # ----------------------------------------------------
-            # 🟢 PULL LIVE GA4 DATA (0 TOKENS)
-            # ----------------------------------------------------
+            # GA4 DATA PULL
             ga4_client = BetaAnalyticsDataClient(credentials=scoped_creds)
             ga4_request = RunReportRequest(
                 property=f"properties/{ga4_property_id}",
@@ -113,16 +105,11 @@ if st.sidebar.button("⚡ Execute Live Audit"):
                 })
             ga4_df = pd.DataFrame(ga4_records)
 
-            # ----------------------------------------------------
-            # 🟢 MERGE & CALCULATE YIELD% (0 TOKENS)
-            # ----------------------------------------------------
+            # DATA PROCESSING AND INTEGRATION VIEW
             if gsc_df.empty:
-                st.error("No raw data found inside your Google Search Console account for this property window.")
+                st.error("No data found inside your Google Search Console account for this window.")
             elif ga4_df.empty:
-                st.warning("⚠️ Connected to GA4, but zero 'pdf_download_click' events were found. Double check your custom event name matching.")
-                
-                # Fallback: Display just the GSC metrics to keep user running
-                st.subheader("📊 Live Organic Performance (No Conversion events found yet)")
+                st.warning("⚠️ Connected to GA4, but zero 'pdf_download_click' events found. Showing GSC reference profiles.")
                 st.dataframe(gsc_df, use_container_width=True)
             else:
                 gsc_df['URL'] = gsc_df['URL'].astype(str).str.rstrip('/')
@@ -131,7 +118,7 @@ if st.sidebar.button("⚡ Execute Live Audit"):
                 final_df = pd.merge(gsc_df, ga4_df, on='URL', how='inner')
                 
                 if final_df.empty:
-                    st.warning("⚠️ Data tables read successfully, but URLs didn't align. Displaying GSC reference values:")
+                    st.warning("⚠️ URLs didn't align between platforms. Displaying GSC profiles:")
                     st.dataframe(gsc_df.head(10), use_container_width=True)
                 else:
                     final_df['Yield%'] = (final_df['PDF_Conversions'] / (final_df['Impressions'] + 1)) * 1000
@@ -140,25 +127,13 @@ if st.sidebar.button("⚡ Execute Live Audit"):
                     st.subheader("📊 Live Yield% Efficiency Dashboard")
                     st.dataframe(final_df, use_container_width=True)
 
-                    # ----------------------------------------------------
-                    # 🟢 BATCHED AI INSIGHTS (Massive Token Savings)
-                    # ----------------------------------------------------
                     st.subheader("🤖 Gemini Master Optimization Playbook")
-                    
                     worst_performers = final_df.head(3)
                     data_summary = ""
                     for _, row in worst_performers.iterrows():
                         data_summary += f"- URL: {row['URL']} (Impr: {row['Impressions']}, Clicks: {row['Clicks']}, Yield%: {row['Yield%']:.3f})\n"
 
-                    batched_prompt = f"""
-                    You are the chief Growth Hacking Director for Shiksha.com. 
-                    Review this consolidated batch of our worst-performing exam landing layouts based on Yield% (Conversions per 1k impressions):
-                    
-                    {data_summary}
-                    
-                    Provide a short 3-bullet-point master roadmap. 
-                    Each bullet point must highlight the unique page type context (like NEET or AIBE results) and give one punchy design alteration to make the main PDF click action more explicit.
-                    """
+                    batched_prompt = f"Review these low Yield% exam landing layouts for Shiksha.com and provide a 3-bullet master roadmap for layout improvements:\n\n{data_summary}"
                     
                     response = ai_client.models.generate_content(
                         model='gemini-2.5-flash',
