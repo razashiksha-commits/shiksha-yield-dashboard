@@ -4,6 +4,7 @@ import os
 import json
 import ast
 import requests
+import time
 from google import genai
 
 st.set_page_config(page_title="Shiksha Yield% Hub", layout="wide")
@@ -25,10 +26,9 @@ except Exception as e:
     st.sidebar.error(f"❌ Cloud Parameter Error: {str(e)}")
     st.stop()
 
-# Helper function to generate a fresh, short-lived Access Token natively via HTTP
+# Helper function to generate a fresh Access Token natively via HTTP
 def get_google_access_token(creds_dict):
     import jwt
-    import time
     iat = int(time.time())
     exp = iat + 3600
     payload = {
@@ -39,10 +39,7 @@ def get_google_access_token(creds_dict):
         'exp': exp,
         'scope': 'https://googleapis.com https://googleapis.com'
     }
-    # Create signed assertion token
     signed_jwt = jwt.encode(payload, creds_dict['private_key'], algorithm='RS256')
-    
-    # Request access token from Google
     r = requests.post('https://googleapis.com', data={
         'grant_type': 'urn:ietf:params:oauth:grant-type:jwt-bearer',
         'assertion': signed_jwt
@@ -59,9 +56,8 @@ end_date = st.sidebar.date_input("End Date", pd.to_datetime("today"))
 if st.sidebar.button("⚡ Execute Live Date-Wise Audit"):
     with st.spinner("Requesting live date-wise segments from Google APIs..."):
         try:
-            # Generate a fresh access token for this execution block
             token = get_google_access_token(google_creds)
-            headers = {"Authorization": f"Bearer {token}", "Content-Type": "json"}
+            headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
             
             # ----------------------------------------------------
             # 🟢 FETCH DATE-WISE GSC DATA
@@ -72,7 +68,7 @@ if st.sidebar.button("⚡ Execute Live Date-Wise Audit"):
             gsc_payload = {
                 'startDate': start_date.strftime('%Y-%m-%d'),
                 'endDate': end_date.strftime('%Y-%m-%d'),
-                'dimensions': ['date', 'page'], # Added date parameter here
+                'dimensions': ['date', 'page'],
                 'rowLimit': 500
             }
             response_gsc = requests.post(gsc_endpoint, json=gsc_payload, headers=headers).json()
@@ -80,9 +76,12 @@ if st.sidebar.button("⚡ Execute Live Date-Wise Audit"):
             gsc_records = []
             if 'rows' in response_gsc:
                 for row in response_gsc['rows']:
+                    # 💎 FIXED: Extracted list items correctly to handle raw API strings safely
+                    date_val = row['keys'][0]
+                    url_val = str(row['keys'][1]).rstrip('/')
                     gsc_records.append({
-                        'Date': row['keys'][0],
-                        'URL': row['keys'][1].astype(str).str.rstrip('/'),
+                        'Date': date_val,
+                        'URL': url_val,
                         'Impressions': int(row['impressions']),
                         'Clicks': int(row['clicks'])
                     })
@@ -95,7 +94,7 @@ if st.sidebar.button("⚡ Execute Live Date-Wise Audit"):
             
             ga4_payload = {
                 "dateRanges": [{"startDate": start_date.strftime('%Y-%m-%d'), "endDate": end_date.strftime('%Y-%m-%d')}],
-                "dimensions": [{"name": "date"}, {"name": "landingPage"}], # Added date dimension
+                "dimensions": [{"name": "date"}, {"name": "landingPage"}],
                 "metrics": [{"name": "eventCount"}],
                 "dimensionFilter": {
                     "filter": {
@@ -109,11 +108,17 @@ if st.sidebar.button("⚡ Execute Live Date-Wise Audit"):
             ga4_records = []
             if 'rows' in response_ga4:
                 for row in response_ga4['rows']:
+                    raw_date = row['dimensionValues'][0]['value']
+                    # Convert standard GA4 date string format (YYYYMMDD) cleanly
+                    formatted_date = f"{raw_date[0:4]}-{raw_date[4:6]}-{raw_date[6:8]}"
+                    
                     raw_path = row['dimensionValues'][1]['value']
                     full_url = raw_path if raw_path.startswith('http') else gsc_site_url + raw_path.lstrip('/')
+                    full_url = str(full_url).rstrip('/')
+                    
                     ga4_records.append({
-                        'Date': pd.to_datetime(row['dimensionValues'][0]['value']).strftime('%Y-%m-%d'),
-                        'URL': str(full_url).rstrip('/'),
+                        'Date': formatted_date,
+                        'URL': full_url,
                         'PDF_Conversions': int(row['metricValues'][0]['value'])
                     })
             ga4_df = pd.DataFrame(ga4_records)
@@ -121,17 +126,19 @@ if st.sidebar.button("⚡ Execute Live Date-Wise Audit"):
             # ----------------------------------------------------
             # 🟢 SYNCHRONIZE & MERGE ON DATE + URL
             # ----------------------------------------------------
-            if gsc_df.empty or ga4_df.empty:
-                st.error("No balancing date-wise tracking data located for this specific timeline.")
+            if gsc_df.empty:
+                st.error("No organic tracking data located inside GSC for this timeframe.")
+            elif ga4_df.empty:
+                st.warning("⚠️ Connected to GA4, but zero 'pdf_download_click' events were triggered. Showing raw GSC profiles:")
+                st.dataframe(gsc_df, use_container_width=True)
             else:
-                # Merge matching records on BOTH Date and clean URL keys
                 final_df = pd.merge(gsc_df, ga4_df, on=['Date', 'URL'], how='inner')
                 
                 if final_df.empty:
-                    st.warning("⚠️ Connected successfully, but date-wise URLs didn't align across systems. Showing raw GSC timeline:")
-                    st.dataframe(gsc_df.head(20), use_container_width=True)
+                    st.warning("⚠️ Connected successfully, but daily URLs did not overlap across platforms. Showing raw GSC profiles:")
+                    st.dataframe(gsc_df.head(15), use_container_width=True)
                 else:
-                    # Calculate Yield% per day: (Conversions / Impressions) * 1000
+                    # Yield Metric Formula: (Conversions / Impressions) * 1000
                     final_df['Yield%'] = (final_df['PDF_Conversions'] / (final_df['Impressions'] + 1)) * 1000
                     final_df = final_df.sort_values(by=['Date', 'Yield%'], ascending=[False, True])
                     
@@ -139,7 +146,7 @@ if st.sidebar.button("⚡ Execute Live Date-Wise Audit"):
                     st.dataframe(final_df, use_container_width=True)
                     
                     # ----------------------------------------------------
-                    # 🟢 BATCHED ONE-CALL GEMINI BLUEPRINT
+                    # 🟢 BATCHED ONE-CALL GEMINI ANALYSIS
                     # ----------------------------------------------------
                     st.subheader("🤖 Gemini Daily Trend Optimization Summary")
                     worst_performers = final_df.head(3)
@@ -150,7 +157,7 @@ if st.sidebar.button("⚡ Execute Live Date-Wise Audit"):
                         
                     batched_prompt = f"""
                     You are the chief Growth Hacking Director for Shiksha.com. 
-                    Review this timeline breakdown of our worst-performing exam landing layouts based on daily Yield% tracking patterns:
+                    Review this daily timeline breakdown of our worst-performing exam landing layouts based on tracking patterns:
                     
                     {data_summary}
                     
