@@ -49,14 +49,15 @@ def get_google_access_token(creds_dict):
 # 2. Sidebar Input Controls for the SEO Team
 st.sidebar.subheader("🎛️ Audit Controls")
 gsc_site_url = st.sidebar.text_input("GSC Property URL", "https://shiksha.com")
-ga4_property_id = st.sidebar.text_input("GA4 Property ID", "123456789")
+ga4_property_id = st.sidebar.text_input("GA4 Property ID", "352971661")
 start_date = st.sidebar.date_input("Start Date", pd.to_datetime("today") - pd.Timedelta(days=7))
 end_date = st.sidebar.date_input("End Date", pd.to_datetime("today"))
 
 if st.sidebar.button("⚡ Execute Live Date-Wise Audit"):
-    with st.spinner("Requesting live date-wise segments from Google APIs..."):
+    with st.spinner("Politely requesting live date-wise segments from Google APIs..."):
         try:
             token = get_google_access_token(google_creds)
+            # 💎 FIX 1: Set correct standard content-type header string
             headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
             
             # ----------------------------------------------------
@@ -71,20 +72,25 @@ if st.sidebar.button("⚡ Execute Live Date-Wise Audit"):
                 'dimensions': ['date', 'page'],
                 'rowLimit': 500
             }
-            response_gsc = requests.post(gsc_endpoint, json=gsc_payload, headers=headers).json()
+            response_gsc = requests.post(gsc_endpoint, json=gsc_payload, headers=headers)
             
+            # Defensive check for non-JSON or error payloads
+            if response_gsc.status_code != 200:
+                st.error(f"❌ Google Search Console API rejected request (Status {response_gsc.status_code}): {response_gsc.text}")
+                st.stop()
+                
+            gsc_data = response_gsc.json()
             gsc_records = []
-            if 'rows' in response_gsc:
-                for row in response_gsc['rows']:
-                    # 💎 FIXED: Extracted list items correctly to handle raw API strings safely
-                    date_val = row['keys'][0]
-                    url_val = str(row['keys'][1]).rstrip('/')
-                    gsc_records.append({
-                        'Date': date_val,
-                        'URL': url_val,
-                        'Impressions': int(row['impressions']),
-                        'Clicks': int(row['clicks'])
-                    })
+            if 'rows' in gsc_data:
+                for row in gsc_data['rows']:
+                    # 💎 FIX 2: Handle key list assignments safely
+                    if 'keys' in row and len(row['keys']) >= 2:
+                        gsc_records.append({
+                            'Date': str(row['keys'][0]),
+                            'URL': str(row['keys'][1]).rstrip('/'),
+                            'Impressions': int(row['impressions']),
+                            'Clicks': int(row['clicks'])
+                        })
             gsc_df = pd.DataFrame(gsc_records)
 
             # ----------------------------------------------------
@@ -103,13 +109,17 @@ if st.sidebar.button("⚡ Execute Live Date-Wise Audit"):
                     }
                 }
             }
-            response_ga4 = requests.post(ga4_endpoint, json=ga4_payload, headers=headers).json()
+            response_ga4 = requests.post(ga4_endpoint, json=ga4_payload, headers=headers)
             
+            if response_ga4.status_code != 200:
+                st.error(f"❌ Google Analytics API rejected request (Status {response_ga4.status_code}): {response_ga4.text}")
+                st.stop()
+                
+            ga4_data = response_ga4.json()
             ga4_records = []
-            if 'rows' in response_ga4:
-                for row in response_ga4['rows']:
+            if 'rows' in ga4_data:
+                for row in ga4_data['rows']:
                     raw_date = row['dimensionValues'][0]['value']
-                    # Convert standard GA4 date string format (YYYYMMDD) cleanly
                     formatted_date = f"{raw_date[0:4]}-{raw_date[4:6]}-{raw_date[6:8]}"
                     
                     raw_path = row['dimensionValues'][1]['value']
@@ -127,18 +137,17 @@ if st.sidebar.button("⚡ Execute Live Date-Wise Audit"):
             # 🟢 SYNCHRONIZE & MERGE ON DATE + URL
             # ----------------------------------------------------
             if gsc_df.empty:
-                st.error("No organic tracking data located inside GSC for this timeframe.")
+                st.error("No organic tracking data rows located inside GSC for this timeline window.")
             elif ga4_df.empty:
-                st.warning("⚠️ Connected to GA4, but zero 'pdf_download_click' events were triggered. Showing raw GSC profiles:")
+                st.warning("⚠️ Connected to GA4, but zero 'pdf_download_click' events were found. Showing raw GSC profiles as reference fallback:")
                 st.dataframe(gsc_df, use_container_width=True)
             else:
                 final_df = pd.merge(gsc_df, ga4_df, on=['Date', 'URL'], how='inner')
                 
                 if final_df.empty:
-                    st.warning("⚠️ Connected successfully, but daily URLs did not overlap across platforms. Showing raw GSC profiles:")
+                    st.warning("⚠️ Connected successfully, but daily URLs did not overlap across platforms. Showing GSC profiles:")
                     st.dataframe(gsc_df.head(15), use_container_width=True)
                 else:
-                    # Yield Metric Formula: (Conversions / Impressions) * 1000
                     final_df['Yield%'] = (final_df['PDF_Conversions'] / (final_df['Impressions'] + 1)) * 1000
                     final_df = final_df.sort_values(by=['Date', 'Yield%'], ascending=[False, True])
                     
