@@ -7,7 +7,7 @@ from google import genai
 from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.analytics.data_v1beta.types import DateRange, Dimension, Metric, RunReportRequest
 from google.oauth2 import service_account
-from googleapiclient.discovery import build
+from google.auth.transport.requests import AuthorizedSession
 
 st.set_page_config(page_title="Shiksha Yield% Hub", layout="wide")
 st.title("🎯 Shiksha.com Automated SEO Yield% Hub")
@@ -20,7 +20,6 @@ try:
     except Exception:
         google_creds = ast.literal_eval(raw_json_str)
         
-    # 💎 FIX: Explicitly add authorization scopes to refresh tokens automatically
     scoped_creds = service_account.Credentials.from_service_account_info(
         google_creds, 
         scopes=[
@@ -48,30 +47,42 @@ if st.sidebar.button("⚡ Execute Live Audit"):
     with st.spinner("Pulling data from Google Search Console and Analytics APIs..."):
         try:
             # ----------------------------------------------------
-            # 🟢 PULL live GSC DATA (0 TOKENS)
+            # 🟢 PULL LIVE GSC DATA VIA DIRECT AUTHORIZED SESSION
             # ----------------------------------------------------
-            # 💎 FIX: Use authorized credentials object directly to refresh tokens
-            gsc_service = build('webmasters', 'v3', credentials=scoped_creds)
-            gsc_request = {
+            # 💎 FIX: Forces a direct HTTP post using refreshed tokens to prevent access token expiration
+            session = AuthorizedSession(scoped_creds)
+            
+            # Encode URL parameters safely to handle domain strings
+            encoded_url = gsc_site_url.replace(":", "%3A").replace("/", "%2F")
+            api_endpoint = f"https://googleapis.com{encoded_url}/searchAnalytics/query"
+            
+            gsc_payload = {
                 'startDate': start_date.strftime('%Y-%m-%d'),
                 'endDate': end_date.strftime('%Y-%m-%d'),
                 'dimensions': ['page'],
                 'rowLimit': 100
             }
-            gsc_response = gsc_service.searchanalytics().query(siteUrl=gsc_site_url, body=gsc_request).execute()
             
+            response_gsc = session.post(api_endpoint, json=gsc_payload)
+            gsc_data = response_gsc.json()
+            
+            if 'error' in gsc_data:
+                st.error(f"Google Search Console API Error: {gsc_data['error']['message']}")
+                st.stop()
+                
             gsc_records = []
-            if 'rows' in gsc_response:
-                for row in gsc_response['rows']:
+            if 'rows' in gsc_data:
+                for row in gsc_data['rows']:
+                    url_string = row['keys'][0] if isinstance(row['keys'], list) else row['keys']
                     gsc_records.append({
-                        'URL': row['keys'][0] if isinstance(row['keys'], list) else row['keys'],
+                        'URL': url_string,
                         'Impressions': row['impressions'],
                         'Clicks': row['clicks']
                     })
             gsc_df = pd.DataFrame(gsc_records)
 
             # ----------------------------------------------------
-            # 🟢 PULL live GA4 DATA (0 TOKENS)
+            # 🟢 PULL LIVE GA4 DATA (0 TOKENS)
             # ----------------------------------------------------
             ga4_client = BetaAnalyticsDataClient(credentials=scoped_creds)
             ga4_request = RunReportRequest(
@@ -105,8 +116,14 @@ if st.sidebar.button("⚡ Execute Live Audit"):
             # ----------------------------------------------------
             # 🟢 MERGE & CALCULATE YIELD% (0 TOKENS)
             # ----------------------------------------------------
-            if gsc_df.empty or ga4_df.empty:
-                st.error("No raw tracking footprint detected for this window.")
+            if gsc_df.empty:
+                st.error("No raw data found inside your Google Search Console account for this property window.")
+            elif ga4_df.empty:
+                st.warning("⚠️ Connected to GA4, but zero 'pdf_download_click' events were found. Double check your custom event name matching.")
+                
+                # Fallback: Display just the GSC metrics to keep user running
+                st.subheader("📊 Live Organic Performance (No Conversion events found yet)")
+                st.dataframe(gsc_df, use_container_width=True)
             else:
                 gsc_df['URL'] = gsc_df['URL'].astype(str).str.rstrip('/')
                 ga4_df['URL'] = ga4_df['URL'].astype(str).str.rstrip('/')
@@ -114,7 +131,8 @@ if st.sidebar.button("⚡ Execute Live Audit"):
                 final_df = pd.merge(gsc_df, ga4_df, on='URL', how='inner')
                 
                 if final_df.empty:
-                    st.warning("⚠️ Data tables read successfully, but the URLs did not match up. Check your properties format configuration.")
+                    st.warning("⚠️ Data tables read successfully, but URLs didn't align. Displaying GSC reference values:")
+                    st.dataframe(gsc_df.head(10), use_container_width=True)
                 else:
                     final_df['Yield%'] = (final_df['PDF_Conversions'] / (final_df['Impressions'] + 1)) * 1000
                     final_df = final_df.sort_values(by='Yield%', ascending=True)
