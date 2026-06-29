@@ -20,9 +20,13 @@ try:
     except Exception:
         google_creds = ast.literal_eval(raw_json_str)
         
+    # 💎 FIX: Explicitly add authorization scopes to refresh tokens automatically
     scoped_creds = service_account.Credentials.from_service_account_info(
         google_creds, 
-        scopes=['https://googleapis.com', 'https://googleapis.com']
+        scopes=[
+            'https://googleapis.com', 
+            'https://googleapis.com'
+        ]
     )
     
     # Load Gemini API Key
@@ -46,6 +50,7 @@ if st.sidebar.button("⚡ Execute Live Audit"):
             # ----------------------------------------------------
             # 🟢 PULL live GSC DATA (0 TOKENS)
             # ----------------------------------------------------
+            # 💎 FIX: Use authorized credentials object directly to refresh tokens
             gsc_service = build('webmasters', 'v3', credentials=scoped_creds)
             gsc_request = {
                 'startDate': start_date.strftime('%Y-%m-%d'),
@@ -59,7 +64,7 @@ if st.sidebar.button("⚡ Execute Live Audit"):
             if 'rows' in gsc_response:
                 for row in gsc_response['rows']:
                     gsc_records.append({
-                        'URL': row['keys'][0],
+                        'URL': row['keys'][0] if isinstance(row['keys'], list) else row['keys'],
                         'Impressions': row['impressions'],
                         'Clicks': row['clicks']
                     })
@@ -86,7 +91,6 @@ if st.sidebar.button("⚡ Execute Live Audit"):
             ga4_records = []
             for row in ga4_response.rows:
                 raw_path = row.dimension_values[0].value
-                # Clean prefix issues safely
                 if raw_path.startswith('http'):
                     full_url = raw_path
                 else:
@@ -104,14 +108,13 @@ if st.sidebar.button("⚡ Execute Live Audit"):
             if gsc_df.empty or ga4_df.empty:
                 st.error("No raw tracking footprint detected for this window.")
             else:
-                # Clean trailing slashes to ensure exact matches
                 gsc_df['URL'] = gsc_df['URL'].astype(str).str.rstrip('/')
                 ga4_df['URL'] = ga4_df['URL'].astype(str).str.rstrip('/')
                 
                 final_df = pd.merge(gsc_df, ga4_df, on='URL', how='inner')
                 
                 if final_df.empty:
-                    st.warning("⚠️ Data pulled, but URLs between GSC and GA4 didn't align. Check your formatting parameters.")
+                    st.warning("⚠️ Data tables read successfully, but the URLs did not match up. Check your properties format configuration.")
                 else:
                     final_df['Yield%'] = (final_df['PDF_Conversions'] / (final_df['Impressions'] + 1)) * 1000
                     final_df = final_df.sort_values(by='Yield%', ascending=True)
