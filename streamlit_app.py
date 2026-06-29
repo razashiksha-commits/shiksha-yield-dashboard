@@ -5,7 +5,7 @@ import json
 import ast
 import requests
 import time
-from google import genai
+from google import genai 
 
 st.set_page_config(page_title="Shiksha Yield% Hub", layout="wide")
 st.title("🎯 Shiksha.com Automated SEO Yield% Trend Tracker")
